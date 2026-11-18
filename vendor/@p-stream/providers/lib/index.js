@@ -5938,6 +5938,476 @@ function _aesCbcDecrypt(ct,key,iv){
 }
 function _bytesToStr(b){var s='',i=0;while(i<b.length){var c=b[i++];if(c<0x80)s+=String.fromCharCode(c);else if(c<0xE0)s+=String.fromCharCode(((c&0x1f)<<6)|(b[i++]&0x3f));else if(c<0xF0)s+=String.fromCharCode(((c&0x0f)<<12)|((b[i++]&0x3f)<<6)|(b[i++]&0x3f));else{var cp=((c&0x07)<<18)|((b[i++]&0x3f)<<12)|((b[i++]&0x3f)<<6)|(b[i++]&0x3f);cp-=0x10000;s+=String.fromCharCode(0xD800+(cp>>10),0xDC00+(cp&0x3FF));}}return s;}
 `
+  },
+  {
+    id: "allwish",
+    name: "AllWish",
+    kind: "anime",
+    lang: "en",
+    rank: 1010,
+    js: `// AllWish — anime source (all-wish.me redirects to anirex.to).
+//
+// Chain:
+//   GET /api/search?q=&page=&per_page=            -> anime slug + anilist_id
+//   GET /api/anime/<slug>                        -> metadata + anilist_id
+//   GET /api/anime/<slug>/episodes?per_page=2500 -> episode numbers
+//   GET /api/v1/watch/<anilist_id>/<ep>          -> servers[].player_url
+//
+// Servers are FlixCloud (\`flixcloud.cc/e/<id>?v=2\`) or MegaPlay/VidPlay
+// embeds. FlixCloud obfuscates the m3u8 behind a seed-derived field mapping,
+// a WASM fragment combiner, PBKDF2(SHA-256, salt=seed, 1000 iters), a seed XOR
+// and a final SHA-256; the ciphertext comes from \`/api/m3u8/<token>\`.
+// MegaPlay encrypts \`enc\` with its usual AES-256-CBC key/iv.
+
+var SITE = 'https://anirex.to';
+var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+var MEGA_KEY = 'i?LMTAx0Q6,:}50U';
+var MEGA_IV = "W0;27ToaUpl_P%'c";
+
+function getInfo() {
+  return { name: 'AllWish', lang: 'en', baseUrl: SITE,
+    logo: SITE + '/favicon.ico', type: 'anime', version: '1.0.0' };
+}
+
+function _json(url, ref) {
+  var h = { 'User-Agent': UA, 'Referer': ref || SITE + '/', 'Origin': SITE };
+  return fetch(url, { headers: h }).then(function (r) {
+    var j; try { j = JSON.parse(r.body || 'null'); } catch (e) { j = null; }
+    return j;
+  }).catch(function () { return null; });
+}
+
+function _title(a) {
+  return a.title_english || a.title_romaji || a.title || '';
+}
+
+// ── catalog ─────────────────────────────────────────────────────────────────
+
+function search(q, page, opts) {
+  return _json(SITE + '/api/search?q=' + encodeURIComponent(q)
+    + '&sort=popularity&page=' + (page || 1) + '&per_page=28', SITE + '/')
+    .then(function (j) {
+      var rows = (j && j.data) || [];
+      var out = [];
+      for (var i = 0; i < rows.length; i++) {
+        var a = rows[i];
+        if (!a || !a.slug) continue;
+        out.push({
+          id: a.anilist_id || a.id,
+          title: _title(a),
+          url: a.slug,
+          cover: a.cover_image_url || '',
+          year: a.season_year || null,
+          type: 'anime',
+        });
+      }
+      return out;
+    });
+}
+
+function popular() {
+  return _json(SITE + '/api/anime/popular?page=1&per_page=12', SITE + '/')
+    .then(function (j) {
+      var rows = (j && j.data) || [];
+      var out = [];
+      for (var i = 0; i < rows.length; i++) {
+        var a = rows[i];
+        if (!a || !a.slug) continue;
+        out.push({ id: a.anilist_id || a.id, title: _title(a),
+          url: a.slug, cover: a.cover_image_url || '',
+          year: a.season_year || null, type: 'anime' });
+      }
+      return out;
+    });
+}
+
+function getHome() { return popular(); }
+
+// ── detail / episodes ──────────────────────────────────────────────────────
+
+function getDetail(slug, opts) {
+  var s = String(slug || '');
+  return _json(SITE + '/api/anime/' + encodeURIComponent(s), SITE + '/')
+    .then(function (j) {
+      var d = j && j.data;
+      if (!d) return null;
+      return _json(SITE + '/api/anime/' + encodeURIComponent(s)
+        + '/episodes?per_page=2500', SITE + '/').then(function (eps) {
+        var rows = (eps && eps.data) || [];
+        var list = [];
+        for (var i = 0; i < rows.length; i++) {
+          var e = rows[i];
+          if (!e) continue;
+          var n = e.episode_number;
+          if (n == null) continue;
+          list.push({
+            number: n,
+            title: e.title || ('Episode ' + n),
+            // slug + episode number so getVideoSources can resolve the pair
+            url: s + '|' + n,
+            season: null,
+          });
+        }
+        return {
+          id: d.anilist_id || d.id,
+          title: _title(d),
+          url: s,
+          episodes: list,
+        };
+      });
+    });
+}
+
+function getEpisodes(slug, opts) {
+  return getDetail(slug, opts).then(function (d) {
+    return d ? d.episodes : [];
+  });
+}
+
+// ── FlixCloud decrypt ──────────────────────────────────────────────────────
+
+function _bytes(b64) {
+  var s = String(b64 || '').replace(/-/g, '+').replace(/_/g, '/');
+  return base64ToBytes(s);
+}
+
+function _u8(bytes) { return new Uint8Array(bytes); }
+
+// Extract the SvelteKit \`data:{...}\` literal from the flixcloud player page.
+function _pageData(page) {
+  var marker = '{type:"data",data:';
+  var mi = page.indexOf(marker);
+  if (mi < 0) return null;
+  var start = page.indexOf('{', mi + marker.length - 1);
+  var depth = 0, end = -1, inStr = false, esc = false;
+  for (var i = start; i < page.length; i++) {
+    var c = page.charAt(i);
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\\\') esc = true;
+      else if (c === '"') inStr = false;
+    } else {
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+  }
+  if (end < 0) return null;
+  try { return new Function('return (' + page.slice(start, end) + ')')(); }
+  catch (e) { return null; }
+}
+
+function _sha(s) { return sha256Hex(String(s)); }
+
+async function _flixcloud(playerUrl) {
+  var page = await fetch(playerUrl, {
+    headers: { 'User-Agent': UA, 'Referer': SITE + '/', 'Origin': SITE },
+  }).then(function (r) { return r.body || ''; }).catch(function () { return ''; });
+  var data = _pageData(page);
+  if (!data || !data.obfuscated_crypto_data || !data.obfuscation_seed) return null;
+
+  var seed = String(data.obfuscation_seed);
+  var e = seed;
+  for (var s = 0; s < 3; s++) e = await _sha(e + String(s));
+  var a = e;
+  for (var s2 = 0; s2 < 3; s2++) a = await _sha(a + String(s2));
+
+  var fields = {
+    keyField: 'kf_' + e.substring(8, 16),
+    ivField: 'ivf_' + e.substring(16, 24),
+    containerName: 'cd_' + e.substring(24, 32),
+    arrayName: 'ad_' + e.substring(32, 40),
+    objectName: 'od_' + e.substring(40, 48),
+    tokenField: e.substring(48, 64) + '_' + e.substring(56, 64),
+    keyFrag2Field: a.substring(0, 16) + '_' + a.substring(16, 24),
+  };
+
+  var cont = data.obfuscated_crypto_data[fields.containerName];
+  if (!cont) return null;
+  var arr = cont[fields.arrayName];
+  if (!arr || !arr.length) return null;
+  var obj = arr[0][fields.objectName];
+  if (!obj) return null;
+  var frag1 = _bytes(obj[fields.keyField]);
+  var iv = _bytes(obj[fields.ivField]);
+  var frag2 = _bytes(data[fields.keyFrag2Field]);
+  var tokenRef = data[fields.tokenField];
+  if (!frag1.length || !iv.length || !frag2.length || !tokenRef) return null;
+
+  var tokenResp = await fetch('https://flixcloud.cc/api/m3u8/' + tokenRef, {
+    headers: { 'User-Agent': UA, 'Referer': 'https://flixcloud.cc/' },
+  }).then(function (r) { return r.body || ''; }).catch(function () { return ''; });
+  var tok; try { tok = JSON.parse(tokenResp || 'null'); } catch (err) { tok = null; }
+  if (!tok) return null;
+
+  var vidKey = (await _sha(tokenRef + 'vid')).substring(0, 10);
+  var keyKey = (await _sha(tokenRef + 'key')).substring(0, 10);
+  var cipherB64 = tok[vidKey];
+  var wB64 = tok[keyKey];
+  if (!cipherB64 || !wB64) return null;
+
+  var cipher = _bytes(cipherB64);
+  var w = _bytes(wB64);
+
+  // WASM combiner: key material = frag1 ⊕ frag2 ⊕ w with seed-derived salt.
+  var mod = await WebAssembly.instantiate(_u8(_bytes(data.w_payload)), {});
+  var ex = mod.instance.exports;
+  var mem = ex.memory;
+  if (mem.buffer.byteLength === 0) mem.grow(1);
+  var buf = new Uint8Array(mem.buffer);
+  var L = frag1.length;
+  var T = 1000, A = T + L, W = A + L, Z = W + L;
+  buf.set(frag1, T); buf.set(frag2, A); buf.set(w, W);
+  ex._s(parseInt(seed.substring(0, 8), 16));
+  ex._r(T, A, W, Z, L);
+  var combined = new Uint8Array(buf.subarray(Z, Z + L));
+
+  var imp = await crypto.subtle.importKey('raw', combined,
+    { name: 'PBKDF2' }, false, ['deriveBits']);
+  var bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: new TextEncoder().encode(seed),
+      iterations: 1000, hash: 'SHA-256' }, imp, 256);
+  var derived = new Uint8Array(bits);
+  for (var i = 0; i < 32; i++) derived[i] ^= seed.charCodeAt(i % seed.length);
+  var digest = await crypto.subtle.digest('SHA-256', derived);
+  var aesKey = new Uint8Array(digest);
+
+  var keyImp = await crypto.subtle.importKey('raw', aesKey,
+    { name: 'AES-CBC' }, false, ['decrypt']);
+  var plain = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: iv },
+    keyImp, cipher);
+  var url = new TextDecoder().decode(plain);
+  if (!url || !url.trim()) return null;
+
+  var subs = [];
+  var tracks = data.subtitles || [];
+  for (var t = 0; t < tracks.length; t++) {
+    var tr = tracks[t];
+    if (!tr || !tr.url) continue;
+    subs.push({
+      url: tr.url,
+      label: tr.language || tr.label || 'Unknown',
+      format: tr.format || 'vtt',
+      default: !!tr.default,
+    });
+  }
+  return {
+    url: url.trim(),
+    quality: 'HD',
+    container: 'hls',
+    headers: { 'User-Agent': UA, 'Referer': 'https://flixcloud.cc/',
+      'Origin': 'https://flixcloud.cc' },
+    subtitles: subs,
+  };
+}
+
+// ── MegaPlay fallback ──────────────────────────────────────────────────────
+
+async function _mega(embedUrl, ep) {
+  var ref = 'https://all-wish.me/';
+  var page = await fetch(embedUrl, {
+    headers: { 'User-Agent': UA, 'Referer': ref, 'Origin': ref },
+  }).then(function (r) { return r.body || ''; }).catch(function () { return ''; });
+  var m = String(page).match(/data-id\\s*=\\s*["']?(\\d+)/i);
+  if (!m) return null;
+  var id = m[1];
+  var src = await fetch('https://megaplay.buzz/stream/getSources?id=' + id
+    + '&type=sub', {
+    headers: { 'User-Agent': UA, 'Referer': ref, 'Origin': ref,
+      'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+  }).then(function (r) { return r.body || ''; }).catch(function () { return ''; });
+  var j; try { j = JSON.parse(src || 'null'); } catch (err) { j = null; }
+  if (!j || !j.enc) return null;
+  var decrypted = await aesCbcDecryptB64Url(j.enc, MEGA_KEY, MEGA_IV);
+  var file; try { file = JSON.parse(decrypted || 'null').file; } catch (err) { file = null; }
+  if (!file) return null;
+  var subs = [];
+  var tracks = j.tracks || [];
+  for (var t = 0; t < tracks.length; t++) {
+    var tr = tracks[t];
+    if (!tr || !tr.file) continue;
+    subs.push({ url: tr.file, label: tr.label || 'Unknown',
+      format: 'vtt', default: !!tr.default });
+  }
+  return {
+    url: file,
+    quality: 'HD',
+    container: 'hls',
+    headers: { 'User-Agent': UA, 'Referer': ref, 'Origin': ref },
+    subtitles: subs,
+  };
+}
+
+// ── streams ────────────────────────────────────────────────────────────────
+
+function getVideoSources(episodeUrl, opts) {
+  var parts = String(episodeUrl || '').split('|');
+  var slug = parts[0];
+  var ep = parts[1] || '1';
+  return _json(SITE + '/api/anime/' + encodeURIComponent(slug), SITE + '/')
+    .then(function (j) {
+      var d = j && j.data;
+      var aid = d && (d.anilist_id || d.id);
+      if (!aid) return [];
+      return _json(SITE + '/api/v1/watch/' + aid + '/' + ep, SITE + '/')
+        .then(async function (w) {
+          var servers = (w && w.servers) || [];
+          var out = [];
+          for (var i = 0; i < servers.length; i++) {
+            var s = servers[i];
+            var pu = String((s && s.player_url) || '');
+            if (!pu) continue;
+            if (/flixcloud\\./i.test(pu)) {
+              var src = await _flixcloud(pu);
+              if (src) out.push(src);
+            } else if (/megaplay\\./i.test(pu)) {
+              var src2 = await _mega(pu, ep);
+              if (src2) out.push(src2);
+            } else if (/\\.m3u8(\\?|$)/i.test(pu)) {
+              out.push({ url: pu, quality: 'HD', container: 'hls',
+                headers: { 'User-Agent': UA }, subtitles: [] });
+            }
+          }
+          return out;
+        });
+    });
+}
+`
+  },
+  {
+    id: "allmovieland",
+    name: "AllMovieLand",
+    kind: "movie",
+    lang: "en",
+    rank: 1011,
+    js: `// AllMovieLand — movie source (mapi.elochkaigolochla.com, FastAPI backend
+// behind movielab.media).
+//
+// Chain:
+//   GET /api/v1/search/movies?title=&page=&limit= -> results[] (kinopoisk ids)
+//   GET /api/v1/movies/<kinopoisk_id>             -> result.player[]
+//
+// player entries with source:"m3u8" are direct HLS masters; source:"iframe"
+// entries point at geffe448mik.com players resolved client-side, so only the
+// m3u8 entries are handed to p-stream.
+
+var API = 'https://mapi.elochkaigolochla.com';
+var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+function getInfo() {
+  return { name: 'AllMovieLand', lang: 'en', baseUrl: API,
+    logo: API + '/favicon.ico', type: 'movie', version: '1.0.0' };
+}
+
+function _json(url) {
+  return fetch(url, { headers: { 'User-Agent': UA } })
+    .then(function (r) {
+      var j; try { j = JSON.parse(r.body || 'null'); } catch (e) { j = null; }
+      return j;
+    }).catch(function () { return null; });
+}
+
+function _title(r) {
+  return r.title_en || r.title_ru || '';
+}
+
+// ── catalog ─────────────────────────────────────────────────────────────────
+
+function search(q, page, opts) {
+  return _json(API + '/api/v1/search/movies?title=' + encodeURIComponent(q)
+    + '&page=' + (page || 1) + '&limit=10').then(function (j) {
+      var rows = (j && j.results) || [];
+      var out = [];
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        if (!r || r.kinopoisk_id == null) continue;
+        out.push({
+          id: r.kinopoisk_id,
+          title: _title(r),
+          url: String(r.kinopoisk_id),
+          cover: r.poster || '',
+          year: r.year || null,
+          type: 'movie',
+        });
+      }
+      return out;
+    });
+}
+
+function popular() {
+  return _json(API + '/api/v1/search/random?limit=12').then(function (j) {
+    var rows = (j && j.results) || [];
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!r || r.kinopoisk_id == null) continue;
+      out.push({ id: r.kinopoisk_id, title: _title(r),
+        url: String(r.kinopoisk_id), cover: r.poster || '',
+        year: r.year || null, type: 'movie' });
+    }
+    return out;
+  });
+}
+
+function getHome() { return popular(); }
+
+// ── detail ─────────────────────────────────────────────────────────────────
+
+function getDetail(id, opts) {
+  var kp = String(id || '');
+  return _json(API + '/api/v1/movies/' + encodeURIComponent(kp))
+    .then(function (j) {
+      var r = j && j.result;
+      if (!r) return null;
+      return {
+        id: r.kinopoisk_id,
+        title: _title(r),
+        url: String(r.kinopoisk_id),
+        episodes: [{
+          number: 1,
+          title: _title(r),
+          url: String(r.kinopoisk_id),
+          season: null,
+        }],
+      };
+    });
+}
+
+function getEpisodes(id, opts) {
+  return getDetail(id, opts).then(function (d) {
+    return d ? d.episodes : [];
+  });
+}
+
+// ── streams ────────────────────────────────────────────────────────────────
+
+function getVideoSources(id, opts) {
+  var kp = String(id || '');
+  return _json(API + '/api/v1/movies/' + encodeURIComponent(kp))
+    .then(function (j) {
+      var r = j && j.result;
+      if (!r) return [];
+      var players = r.player || [];
+      var out = [];
+      for (var i = 0; i < players.length; i++) {
+        var p = players[i];
+        if (!p || !p.url) continue;
+        if (String(p.source || '').toLowerCase() === 'm3u8') {
+          out.push({
+            url: p.url,
+            quality: p.quality || 'HD',
+            container: 'hls',
+            headers: { 'User-Agent': UA },
+            subtitles: [],
+          });
+        }
+      }
+      return out;
+    });
+}
+`
   }
 ];
 const zangetsuSourcerers = ZANGETSU_SOURCES.map(makeZangetsuSourcerer);
