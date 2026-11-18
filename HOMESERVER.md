@@ -15,9 +15,23 @@ tailored for a home server. Everything runs on your LAN.
 
 ### Ported sources (Zangetsu providers)
 
-HiAnime · AniKoto · AnimeSuge · Kartoons · AnimeCube (anime) — 4KHDHub · UHD Movies ·
-HDHub4u · VegaMovies · MultiMovies (movies/series). They appear as
-`zangetsu-*` in Settings → Sources and are tried first.
+They appear as `zangetsu-*` in Settings → Sources and are tried first.
+
+| Source | Media | Status |
+| --- | --- | --- |
+| HiAnime | anime | ✅ verified — 1080p HLS, subtitles |
+| AniKoto | anime | ✅ verified — 1080p HLS, subtitles |
+| AnimeSuge | anime | ✅ verified — HLS, 9 subtitle tracks |
+| 4K HDHub | movies | ✅ verified — 4K/1080p/720p links |
+| HDHub4u | movies | ✅ verified — up to 14 streams |
+| MultiMovies | movies/series | ✅ verified — HLS + audio tracks |
+| VegaMovies | movies | ⚠️ search endpoint (search.php) currently 404s |
+| UHD Movies | movies | ⚠️ redirector host unreachable from some networks |
+| AnimeCube | anime | ⚠️ catalog-only titles, no playable sources |
+| Kartoons | anime | ⚠️ needs an API token |
+
+Failures are usually site-side (domain rotation, geo/IP blocking) rather than
+code bugs; try another source in the scrape panel when one fails.
 
 > TorBox was skipped (needs a personal API key). The CloudStream
 > (`.cs3`) and Aniyomi (`.apk`) repos you linked are **compiled Android
@@ -34,7 +48,14 @@ then open **Settings → API** and copy the long **API Read Access Token**
 
 ### 2. Configure
 
-Edit `deploy/runtime-config.js`:
+Copy the template, then fill in your own values:
+
+```bash
+cp deploy/runtime-config.example.js deploy/runtime-config.js
+```
+
+Edit `deploy/runtime-config.js` — it is **git-ignored**, so your TMDB key and
+LAN IP stay out of version control:
 
 ```js
 VITE_TMDB_READ_API_KEY: "eyJhbGciOi…",      // your TMDB read token
@@ -114,6 +135,12 @@ default path here.
   headers strictly; the proxy forwards them, but a few hosts still
   misbehave behind proxies.
 - **Rebuild from scratch** — `docker compose down && docker compose up -d --build`.
+- **Bridge networking unavailable?** Run the two images with `--network host`
+  instead: web listens on **8080**, proxy on **8081**, so the URLs above stay
+  the same.
+- **Subtitles fail to download** — caption files from Vidtube/MegaPlay are
+  Referer-locked; the adapter attaches the stream's headers automatically, so
+  make sure the proxy container is up.
 
 ## Legal note
 
