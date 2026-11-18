@@ -30,7 +30,12 @@ export function scrollToElement(
     }
 
     if (typeof selector === "string") {
-      element = document.querySelector(selector);
+      // router hashes like "#/settings" are not valid CSS selectors
+      try {
+        element = document.querySelector(selector);
+      } catch {
+        element = null;
+      }
     } else {
       element = selector;
     }

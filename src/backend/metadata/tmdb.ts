@@ -173,10 +173,16 @@ const tmdbBaseUrl2 = "https://api.tmdb.org/3/";
 
 const apiKey = conf().TMDB_READ_API_KEY;
 
-const tmdbHeaders = {
-  accept: "application/json",
-  Authorization: `Bearer ${apiKey}`,
-};
+// v3 keys are 32 hex chars and authenticate via the api_key query parameter;
+// v4 read access tokens (eyJ...) authenticate via the Bearer header.
+const isV3ApiKey = /^[0-9a-f]{32}$/i.test(apiKey ?? "");
+
+const tmdbHeaders: Record<string, string> = isV3ApiKey
+  ? { accept: "application/json" }
+  : {
+      accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    };
 
 // Cache for TMDB API responses
 interface TMDBCacheKey {
@@ -236,6 +242,7 @@ export async function get<T>(url: string, params?: object): Promise<T> {
   const allParams = {
     ...params,
     language: formattedLanguage,
+    ...(isV3ApiKey ? { api_key: apiKey } : {}),
   };
 
   if (allParams) {

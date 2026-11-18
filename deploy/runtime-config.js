@@ -1,6 +1,6 @@
 // Runtime configuration for your homeserver instance.
 //
-// Edit the two YOUR_HOMESERVER_IP values and paste your TMDB read key, then
+// Edit the two 192.168.1.2 values and paste your TMDB read key, then
 // run:  docker compose up -d --force-recreate
 // (no rebuild needed — this file is mounted into the web container).
 //
@@ -14,8 +14,8 @@ window.__CONFIG__ = {
   // URL of the proxy service (the `proxy` container). Must be reachable from
   // the DEVICES you watch on — use the homeserver's LAN IP or hostname.
   // Do NOT add a trailing slash.
-  VITE_CORS_PROXY_URL: "http://YOUR_HOMESERVER_IP:8081",
-  VITE_M3U8_PROXY_URL: "http://YOUR_HOMESERVER_IP:8081",
+  VITE_CORS_PROXY_URL: "http://192.168.1.2:8081",
+  VITE_M3U8_PROXY_URL: "http://192.168.1.2:8081",
 
   // ── recommended ─────────────────────────────────────────────────────────
   // false = hash-based routing (works on any nginx without SPA rewrites)

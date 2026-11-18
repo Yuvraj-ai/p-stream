@@ -167,6 +167,21 @@ export function AccountSettings(props: {
   );
 }
 
+// Hash-router paths (e.g. "#/settings") are not valid CSS selectors; only
+// plain anchor hashes like "#settings-account" or "#source-order" are.
+function isAnchorHash(hash: string): boolean {
+  return /^#[A-Za-z][A-Za-z0-9_-]*$/.test(hash);
+}
+
+function querySelectorSafe(hash: string): Element | null {
+  if (!isAnchorHash(hash)) return null;
+  try {
+    return document.querySelector(hash);
+  } catch {
+    return null;
+  }
+}
+
 export function SettingsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -205,7 +220,7 @@ export function SettingsPage() {
         scrollToHash(hash);
       } else {
         // Try to find the element anyway (might be a sub-section)
-        const element = document.querySelector(hash);
+        const element = querySelectorSafe(hash);
         if (element) {
           // Find which category this element belongs to
           const parentSection = element.closest('[id^="settings-"]');
@@ -249,7 +264,7 @@ export function SettingsPage() {
           setSelectedCategory(hashId);
           scrollToHash(hash, { delay: 100 });
         } else {
-          const element = document.querySelector(hash);
+          const element = querySelectorSafe(hash);
           if (element) {
             const parentSection = element.closest('[id^="settings-"]');
             if (parentSection) {
