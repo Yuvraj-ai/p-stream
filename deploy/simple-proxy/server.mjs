@@ -227,7 +227,29 @@ async function handleM3u8(req, res, url, selfBase) {
   if (!upstream.ok) {
     return send(res, upstream.status, {}, `upstream ${upstream.status}`);
   }
-  const text = await upstream.text();
+
+  const contentType = upstream.headers.get('content-type') || '';
+  const buf = Buffer.from(await upstream.arrayBuffer());
+  // Segments, keys and init maps are fetched through this endpoint too.
+  // Only rewrite when the body really is a playlist — rewriting binary data
+  // as text corrupts it (and inflates it several times over).
+  const looksLikePlaylist =
+    /mpegurl|m3u/i.test(contentType) ||
+    buf.subarray(0, 512).toString('utf8').includes('#EXTM3U');
+
+  if (!looksLikePlaylist) {
+    return send(
+      res,
+      200,
+      {
+        'Content-Type': contentType || 'application/octet-stream',
+        'Content-Length': String(buf.length),
+      },
+      buf,
+    );
+  }
+
+  const text = buf.toString('utf8');
   // resolve relative child URLs against the FINAL url after redirects
   const finalBase = upstream.url || target.toString();
   const rewritten = rewritePlaylist(text, finalBase, headers, selfBase);
