@@ -894,13 +894,34 @@ function headersToPlain(headers2) {
   if (typeof headers2 === "object") return { ...headers2 };
   return {};
 }
+const ZANGETSU_READ_HEADERS = [
+  "location",
+  "hx-redirect",
+  "set-cookie",
+  "cookie",
+  "content-type",
+  "content-length",
+  "accept-ranges",
+  "x-final-destination",
+  "x-set-cookie"
+];
 function makeZangetsuFetch(fetcher) {
   return async (url, options) => {
-    const res = await fetcher.full(url, {
+    const headers2 = { ...(options == null ? void 0 : options.headers) ?? {} };
+    if ((options == null ? void 0 : options.followRedirects) === false) headers2["X-No-Follow"] = "1";
+    const timeoutMs = Number((options == null ? void 0 : options.timeoutMs) ?? 0);
+    const request = fetcher.full(url, {
       method: (options == null ? void 0 : options.method) ?? "GET",
-      headers: (options == null ? void 0 : options.headers) ?? {},
-      body: typeof (options == null ? void 0 : options.body) === "string" ? options.body : void 0
+      headers: headers2,
+      body: typeof (options == null ? void 0 : options.body) === "string" ? options.body : void 0,
+      readHeaders: ZANGETSU_READ_HEADERS
     });
+    const res = timeoutMs > 0 ? await Promise.race([
+      request,
+      new Promise(
+        (_, reject) => setTimeout(() => reject(new Error("timeout")), timeoutMs)
+      )
+    ]) : await request;
     const rawBody = res.body;
     const body = typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody ?? "");
     return {
@@ -4413,13 +4434,28 @@ function _cards(html, main) {
   }
   return out;
 }
-// Search results use <div class="result-item"> blocks (article.item is sidebar).
+// Current /search?q= results render <article class="poster-card"> blocks with
+// a poster-art anchor, aria-label title and TMDB poster.
 function _searchCards(html, main) {
   var out = [], seen = {};
-  var parts = html.split(/<div class=['"]result-item['"]/i);
+  var parts = html.split('<article class="poster-card"');
   for (var i = 1; i < parts.length; i++) {
-    var c = _cardFromBlock(parts[i], main);
-    if (c && !seen[c.url]) { seen[c.url] = 1; out.push(c); }
+    var c = parts[i];
+    var href = (c.match(/class="poster-art"[^>]*href="([^"]+)"/) ||
+      c.match(/href="([^"]+)"[^>]*class="poster-art"/) || [])[1];
+    if (!href) continue;
+    var url = _abs(href, main);
+    var title = _cleanTitle(
+      (c.match(/aria-label="([^"]+)"/) || [])[1] ||
+      (c.match(/class="poster-caption"[^>]*>[\\s\\S]*?<a[^>]*>([\\s\\S]*?)<\\/a>/) || [])[1] || '');
+    if (!title) continue;
+    var img = (c.match(/<img[^>]+src="([^"]+)"/) || [])[1] || null;
+    if (seen[url]) continue;
+    seen[url] = 1;
+    out.push({
+      id: url, title: title, cover: (img && img.indexOf('http') === 0) ? img : null,
+      url: url, type: 'movie', sourceId: SOURCE_ID
+    });
   }
   return out;
 }
@@ -4444,22 +4480,26 @@ function getHome(opts) {
 
 function search(query, page, opts) {
   return _main().then(function (main) {
-    var p = (page && page > 1) ? ('/page/' + page) : '';
-    var u = main + p + '/?s=' + encodeURIComponent(query || '');
+    var u = main + '/search?q=' + encodeURIComponent(query || '');
     return _get(u, main + '/').then(function (html) { return _searchCards(html, main); });
   }).catch(function () { return []; });
 }
 
 // ── detail / episodes ─────────────────────────────────────────────────────────
+// Current series pages render episode cards as
+// <a href="/series/<slug>/season/<s>/episode/<e>">…</a> (cinejoy theme); the
+// DooPlay numerando/episodiotitle markup is gone.
 function _episodes(html, main) {
-  var out = [], m;
-  var re = /<div class=['"]numerando['"]>\\s*(\\d+)\\s*-\\s*(\\d+)\\s*<\\/div>\\s*<div class=['"]episodiotitle['"]>\\s*<a href=['"]([^'"]+)['"][^>]*>([\\s\\S]*?)<\\/a>/gi;
+  var out = [], seen = {}, m;
+  var re = /<a[^>]+href="([^"]*\\/series\\/[^"]+\\/season\\/(\\d+)\\/episode\\/(\\d+))"[^>]*>([\\s\\S]*?)<\\/a>/gi;
   while ((m = re.exec(html)) !== null) {
-    var s = parseInt(m[1], 10) || 1, e = parseInt(m[2], 10) || 0;
-    var url = _abs(m[3], main);
+    var url = _abs(m[1], main);
+    if (seen[url]) continue;
+    seen[url] = 1;
+    var s = parseInt(m[2], 10) || 1, e = parseInt(m[3], 10) || 0;
     var name = _trim(htmlText(m[4] || ''));
     var label = 'S' + s + ' E' + e + (name && !/^episode\\s*\\d+$/i.test(name) ? ' · ' + name : '');
-    out.push({ id: 'S' + s + 'E' + e, number: e, title: label, url: url });
+    out.push({ id: 'S' + s + 'E' + e, season: s, number: e, title: label, url: url });
   }
   out.sort(function (a, b) {
     var as = a.id.match(/S(\\d+)E(\\d+)/), bs = b.id.match(/S(\\d+)E(\\d+)/);
@@ -4473,54 +4513,51 @@ function getDetail(url, opts) {
   return _main().then(function (main) {
     var u = _abs(url, main);
     return _get(u, main + '/').then(function (html) {
-      var isSeries = /\\/tvshows\\//i.test(u) || /class=['"]episodios['"]/i.test(html);
+      var isSeries = /\\/series\\//i.test(u) || /cinejoy-season-select/i.test(html);
+      var ogTitle = (html.match(/og:title" content="([^"]+)"/) || [])[1] || '';
       var title = _cleanTitle(
-        (html.match(/<div class="data[^"]*">\\s*<h1>([\\s\\S]*?)<\\/h1>/i) || [])[1] ||
-        (html.match(/og:title" content="([^"]+)"/) || [])[1] || 'Untitled');
-      var poster = (html.match(/<div class="poster">[\\s\\S]{0,200}?<img[^>]+(?:data-src|src)="([^"]+)"/i) || [])[1] ||
-        (html.match(/og:image" content="([^"]+)"/) || [])[1] || null;
-      var description = _trim(htmlText(
-        (html.match(/<div[^>]*class="[^"]*wp-content[^"]*"[^>]*>([\\s\\S]*?)<\\/div>/i) || [])[1] ||
-        (html.match(/itemprop="description"[^>]*>([\\s\\S]*?)<\\/div>/i) || [])[1] ||
-        (html.match(/og:description" content="([^"]+)"/) || [])[1] || ''))
-        .replace(/^\\s*synopsis\\s*[:.]?\\s*/i, '');
-      var date = (html.match(/<span[^>]*class=['"]date['"][^>]*>([^<]+)/i) || [])[1] || '';
-      var year = ((date.match(/(19|20)\\d{2}/) || [])[0]) ||
+        (html.match(/<h1[^>]*>([\\s\\S]*?)<\\/h1>/) || [])[1] || ogTitle || 'Untitled');
+      var poster = (html.match(/og:image" content="([^"]+)"/) || [])[1] || null;
+      var description = _trim(htmlText((html.match(/og:description" content="([^"]+)"/) || [])[1] || ''));
+      var year = ((ogTitle.match(/(19|20)\\d{2}/) || [])[0]) ||
         ((title.match(/(19|20)\\d{2}/) || [])[0]) || null;
 
       var genres = [], gm;
-      var gblock = (html.match(/<div class="sgeneros">([\\s\\S]*?)<\\/div>/i) || [])[1] || '';
-      var gre = /<a[^>]*>([^<]+)<\\/a>/gi;
-      while ((gm = gre.exec(gblock)) !== null) genres.push(_trim(htmlText(gm[1])));
+      var gre = /<a[^>]+href="\\/genre\\/[^"]+"[^>]*>([^<]+)<\\/a>/gi;
+      while ((gm = gre.exec(html)) !== null) genres.push(_trim(htmlText(gm[1])));
 
       var base = {
-        id: u, title: title, cover: (poster && poster.indexOf('http') === 0) ? poster : null,
+        id: u, title: title, cover: poster,
         url: u, description: description, status: 'unknown', genres: genres, studios: [],
         type: 'movie', sourceId: SOURCE_ID, year: year, subCount: 0, dubCount: 0, episodes: []
       };
 
       if (isSeries) {
-        var eps = _episodes(html, main);
-        base.episodes = eps; base.subCount = eps.length;
-      } else {
-        base.episodes = [{ id: 'movie', number: 1, title: title, url: u }];
-        base.subCount = 1;
+        var slug = (u.match(/\\/series\\/([^\\/]+)/) || [])[1] || '';
+        var seasons = [], sm, sre = /<option value="(\\d+)"[^>]*>\\s*Season/gi;
+        while ((sm = sre.exec(html)) !== null) seasons.push(parseInt(sm[1], 10));
+        if (!seasons.length) seasons = [1];
+        return Promise.all(seasons.map(function (sn) {
+          return _get(main + '/series/' + slug + '/season/' + sn, main + '/')
+            .then(function (h) { return _episodes(h, main); })
+            .catch(function () { return []; });
+        })).then(function (lists) {
+          var eps = [], seen = {};
+          for (var i = 0; i < lists.length; i++) {
+            for (var k = 0; k < lists[i].length; k++) {
+              var ep = lists[i][k];
+              if (ep && ep.url && !seen[ep.url]) { seen[ep.url] = 1; eps.push(ep); }
+            }
+          }
+          base.episodes = eps;
+          base.subCount = eps.length;
+          return base;
+        });
       }
 
-      // Tracker-sync ids (best-effort). The imdb/tmdb id lives ONLY in the
-      // player embed URL, never in the page markup. A movie detail page IS the
-      // player page (reuse its html); a series page isn't, so peek episode 1.
-      var phP = isSeries
-        ? (base.episodes.length ? _get(base.episodes[0].url, main + '/') : Promise.resolve(''))
-        : Promise.resolve(html);
-      return phP.then(function (ph) {
-        return _syncIds(ph, isSeries, main);
-      }).then(function (ids) {
-        base.tmdbId = ids.tmdbId || null;
-        base.imdbId = ids.imdbId || null;
-        base.tmdbIsTv = !!ids.tmdbIsTv;
-        return base;
-      }).catch(function () { return base; });
+      base.episodes = [{ id: 'movie', number: 1, title: title, url: u }];
+      base.subCount = 1;
+      return base;
     });
   });
 }
@@ -4739,22 +4776,131 @@ function _iqChain(embedUrl, main) {
   }).catch(function () { return []; });
 }
 
+// ── current cinejoy player chain ─────────────────────────────────────────────
+// Server chips on the movie/episode page carry data-url embed pages. The old
+// dooplay_player_option -> admin-ajax route is gone, so dispatch each embed
+// host directly.
+function _unescHtml(v) {
+  return String(v || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+}
+function _serverUrls(html) {
+  var out = [], seen = {}, m, re = /data-url="([^"]+)"/gi;
+  while ((m = re.exec(html)) !== null) {
+    var u = _unescHtml(m[1]);
+    if (!u || seen[u]) continue;
+    seen[u] = 1;
+    out.push(u);
+  }
+  return out;
+}
+function _dedupe(list) {
+  var out = [], seen = {};
+  for (var i = 0; i < list.length; i++) {
+    var x = list[i];
+    if (x && x.url && !seen[x.url]) { seen[x.url] = 1; out.push(x); }
+  }
+  return out;
+}
+
+function _vidrift(url) {
+  var base = _baseOf(url);
+  return _get(url, base + '/').then(function (html) {
+    var out = [], seen = {}, m, re = /"url"\\s*:\\s*"(\\/api\\/orion\\/[^"]+master\\.m3u8)"/gi;
+    while ((m = re.exec(html)) !== null) {
+      var abs = _abs(m[1], base);
+      if (seen[abs]) continue;
+      seen[abs] = 1;
+      out.push(_src(abs, 'auto', 'MultiMovies [Vidrift]', base + '/'));
+    }
+    return out;
+  }).catch(function () { return []; });
+}
+
+function _vidbolt(url) {
+  var base = _baseOf(url);
+  var mv = url.match(/\\/movie\\/(\\d+)/i);
+  var tv = url.match(/\\/tv\\/(\\d+)\\/(\\d+)\\/(\\d+)/i);
+  var q = tv ? ('type=tv&id=' + tv[1] + '&season=' + tv[2] + '&episode=' + tv[3])
+    : (mv ? ('type=movie&id=' + mv[1]) : '');
+  if (!q) return Promise.resolve([]);
+  return fetch(base + '/api/resolve?' + q, { headers: { 'User-Agent': UA, 'Referer': url } })
+    .then(function (r) {
+      var j = null; try { j = JSON.parse(r.body || 'null'); } catch (e) {}
+      var list = (j && j.stream && j.stream.sources) || [], out = [];
+      for (var i = 0; i < list.length; i++) {
+        var src = list[i];
+        if (!src || !src.url) continue;
+        out.push(_src(src.url, src.quality || 'auto', 'MultiMovies [Vidbolt]', base + '/'));
+      }
+      return out;
+    }).catch(function () { return []; });
+}
+
+function _vidout(url) {
+  var base = _baseOf(url);
+  var mv = url.match(/\\/movie\\/(\\d+)/i);
+  var tv = url.match(/\\/tv\\/(\\d+)\\/s(\\d+)\\/e(\\d+)/i) || url.match(/\\/tv\\/(\\d+)\\/(\\d+)\\/(\\d+)/i);
+  var raw = 'https://raw.githubusercontent.com/Watchout2025/api/refs/heads/main/hls/';
+  if (mv) {
+    return fetch(raw + 'movie/' + mv[1], { headers: { 'User-Agent': UA } }).then(function (r) {
+      var t = _trim(r.body || '');
+      var u = (t.match(/https?:\\/\\/[^\\s]+\\.m3u8[^\\s]*/) || [])[0];
+      return u ? [_src(u, 'auto', 'MultiMovies [Vidout]', base + '/')] : [];
+    }).catch(function () { return []; });
+  }
+  if (tv) {
+    return fetch(raw + 'tv/' + tv[1] + '/S' + tv[2] + '.json', { headers: { 'User-Agent': UA } })
+      .then(function (r) {
+        var j = null; try { j = JSON.parse(r.body || 'null'); } catch (e) {}
+        var u = j && j[tv[3]];
+        return (u && /https?:/i.test(u)) ? [_src(u, 'auto', 'MultiMovies [Vidout]', base + '/')] : [];
+      }).catch(function () { return []; });
+  }
+  return Promise.resolve([]);
+}
+
+function _modiplay(url) {
+  var base = _baseOf(url);
+  return _get(url, base + '/').then(function (html) {
+    var urls = _serverUrls(html);
+    return Promise.all(urls.slice(0, 6).map(function (x) { return _dispatchEmbed(x, 0); }))
+      .then(function (lists) { return _dedupe(lists.reduce(function (a, b) { return a.concat(b || []); }, [])); });
+  }).catch(function () { return []; });
+}
+
+function _proxyPage(url) {
+  var base = _baseOf(url);
+  return _get(url, base + '/').then(function (html) {
+    var urls = _serverUrls(html);
+    return Promise.all(urls.slice(0, 4).map(function (x) { return _dispatchEmbed(x, 1); }))
+      .then(function (lists) { return _dedupe(lists.reduce(function (a, b) { return a.concat(b || []); }, [])); });
+  }).catch(function () { return []; });
+}
+
+function _dispatchEmbed(url, depth) {
+  var l = String(url || '').toLowerCase();
+  if (l.indexOf('modiplay') !== -1) return _modiplay(url);
+  if (l.indexOf('proxy.php') !== -1) return _proxyPage(url);
+  if (l.indexOf('vidrift') !== -1) return _vidrift(url);
+  if (l.indexOf('vidbolt') !== -1) return _vidbolt(url);
+  if (l.indexOf('vidout') !== -1) return _vidout(url);
+  if (l.indexOf('iqsmartgames') !== -1) return _iqChain(url, _baseOf(url));
+  if (depth > 0) return Promise.resolve([]);
+  return _resolveEmbed(url, 'Server', 'auto');
+}
+
 function getVideoSources(pageUrl) {
   return _main().then(function (main) {
     var u = _abs(pageUrl, main);
     return _get(u, main + '/').then(function (html) {
-      var opts = _playerOptions(html);
-      if (!opts.length) throw new Error('MultiMovies: no players');
-      return _findIq(main, opts).then(function (embed) {
-        if (!embed) throw new Error('MultiMovies: GDMIRROR unavailable');
-        return _iqChain(embed, main);
-      });
+      var urls = _serverUrls(html);
+      if (!urls.length) throw new Error('MultiMovies: no players');
+      return Promise.all(urls.slice(0, 6).map(function (x) { return _dispatchEmbed(x, 0); }))
+        .then(function (lists) { return _dedupe(lists.reduce(function (a, b) { return a.concat(b || []); }, [])); });
     });
   }).then(function (sources) {
-    var out = [], seen = {};
-    (sources || []).forEach(function (s) {
-      if (s && s.url && !seen[s.url]) { seen[s.url] = 1; out.push(s); }
-    });
+    var out = _dedupe(sources || []);
     if (!out.length) throw new Error('MultiMovies: no playable sources');
     return out;
   });

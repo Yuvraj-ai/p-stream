@@ -1,6 +1,6 @@
 {
   "name": "@p-stream/providers",
-  "version": "3.3.0-zangetsu.2",
+  "version": "3.3.0-zangetsu.4",
   "description": "P-Stream providers + vendored Zangetsu sources (DMCA-recovered fork)",
   "type": "module",
   "main": "./lib/index.js",

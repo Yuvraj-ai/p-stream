@@ -102,10 +102,14 @@ async function handleProxy(req, res, url) {
   const target = safeUrl(destination);
   if (!target) return send(res, 400, {}, 'invalid destination');
 
+  // Providers ask for redirect chains to stay un-followed (Zangetsu's fetch
+  // `followRedirects: false`) so they can read `hx-redirect` / `location`.
+  const noFollow = String(req.headers['x-no-follow'] || '') === '1';
+
   const headers = {};
   for (const [k, v] of Object.entries(req.headers)) {
     const lk = k.toLowerCase();
-    if (STRIP_FROM_BROWSER.has(lk)) continue;
+    if (STRIP_FROM_BROWSER.has(lk) || lk === 'x-no-follow') continue;
     headers[lk] = v;
   }
   // providers-package style remapped headers
@@ -133,7 +137,7 @@ async function handleProxy(req, res, url) {
       method,
       headers,
       body,
-      redirect: 'follow',
+      redirect: noFollow ? 'manual' : 'follow',
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
     });
   } catch (err) {
