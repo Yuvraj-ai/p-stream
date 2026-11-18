@@ -1,0 +1,11 @@
+{
+  "name": "p-stream-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CORS + m3u8 proxy service for self-hosted P-Stream",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test/echo-target.mjs & sleep 1 && echo 'run the curl checks in HOMESERVER.md'"
+  }
+}

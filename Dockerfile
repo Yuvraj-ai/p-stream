@@ -6,7 +6,11 @@ RUN corepack enable
 
 COPY package.json ./
 COPY pnpm-lock.yaml ./
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
+# vendored @p-stream/providers (DMCA-recovered fork + Zangetsu sources) must be
+# present before install because package.json references it via file:
+COPY vendor ./vendor
+# no BuildKit cache mounts — the classic builder must work too
+RUN pnpm install --frozen-lockfile
 
 ARG PWA_ENABLED="true"
 ARG GA_ID

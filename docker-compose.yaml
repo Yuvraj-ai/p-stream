@@ -1,24 +1,28 @@
-version: "3.8"
+name: p-stream
 
 services:
-  movieweb:
+  # CORS + m3u8 proxy — required. Scrapes and header-locked streams go
+  # through it, so it must be reachable from your LAN devices on :8081.
+  proxy:
+    build: ./deploy/simple-proxy
+    image: p-stream-proxy:local
+    container_name: p-stream-proxy
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+
+  # p-stream web frontend (nginx, serves dist/)
+  p-stream:
     build:
       context: .
-      # args:
-      #   PWA_ENABLED: "false"
-      #   GA_ID: ""
-      #   APP_DOMAIN: ""
-      #   OPENSEARCH_ENABLED: "false"
-      #   TMDB_READ_API_KEY: ""
-      #   CORS_PROXY_URL: ""
-      #   DMCA_EMAIL: ""
-      #   NORMAL_ROUTER: "false"
-      #   BACKEND_URL: ""
-      #   HAS_ONBOARDING: "false"
-      #   ONBOARDING_CHROME_EXTENSION_INSTALL_LINK: ""
-      #   ONBOARDING_PROXY_INSTALL_LINK: ""
-      #   DISALLOWED_IDS: ""
-      #   CDN_REPLACEMENTS: ""
-    ports:
-      - "80:80"
+      dockerfile: Dockerfile
+    image: p-stream-web:local
+    container_name: p-stream-web
     restart: unless-stopped
+    depends_on:
+      - proxy
+    ports:
+      - "8080:80"
+    volumes:
+      # runtime configuration (TMDB key, proxy URLs) — edit without rebuilding
+      - ./deploy/runtime-config.js:/usr/share/nginx/html/config.js:ro
