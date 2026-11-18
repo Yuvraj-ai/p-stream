@@ -240,7 +240,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       return send(res, 204, {});
     }
-    if (url.pathname === '/proxy') {
+    // the providers package calls the proxy at its ROOT path with
+    // ?destination=<url> (makeSimpleProxyFetcher sets baseUrl: undefined), so
+    // "/" and "/proxy" must both serve the general proxy.
+    if (url.pathname === '/proxy' || url.pathname === '/') {
       return await handleProxy(req, res, url);
     }
     if (url.pathname === '/m3u8-proxy') {

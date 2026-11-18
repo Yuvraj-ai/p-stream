@@ -969,6 +969,79 @@ function unpackJs(source) {
     return i >= 0 && i < dict.length && dict[i] !== "" ? dict[i] : k;
   });
 }
+function base64ToBytes(b64) {
+  const s = String(b64 ?? "");
+  try {
+    const bin = atob(s);
+    const out = [];
+    for (let i = 0; i < bin.length; i++) out.push(bin.charCodeAt(i) & 255);
+    return out;
+  } catch {
+    return [];
+  }
+}
+function bytesToB64(bytes) {
+  let bin = "";
+  bytes.forEach((b) => {
+    bin += String.fromCharCode(b & 255);
+  });
+  return btoa(bin);
+}
+function bytesToHex(bytes) {
+  return bytes.map((b) => (b & 255).toString(16).padStart(2, "0")).join("");
+}
+async function sha256Hex(message) {
+  const data = new TextEncoder().encode(String(message));
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function aesCtrDecrypt(opts) {
+  const key2 = new Uint8Array(
+    opts.keyHex.match(/.{2}/g).map((h) => parseInt(h, 16))
+  );
+  const counter = new Uint8Array(
+    opts.counterHex.match(/.{2}/g).map((h) => parseInt(h, 16))
+  );
+  const data = new Uint8Array(base64ToBytes(opts.dataB64));
+  const imported = await crypto.subtle.importKey(
+    "raw",
+    key2,
+    { name: "AES-CTR" },
+    false,
+    ["decrypt"]
+  );
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-CTR", counter, length: 32 },
+    imported,
+    data
+  );
+  return new TextDecoder().decode(plain);
+}
+async function aesCbcDecryptB64Url(dataB64Url, keyStr, ivStr) {
+  const s = String(dataB64Url ?? "").replace(/-/g, "+").replace(/_/g, "/");
+  const ct = new Uint8Array(base64ToBytes(s));
+  const keyBytes = new Uint8Array(32);
+  const ivBytes = new Uint8Array(16);
+  const keyRaw = String(keyStr ?? "");
+  const ivRaw = String(ivStr ?? "");
+  for (let i = 0; i < keyRaw.length && i < 32; i++)
+    keyBytes[i] = keyRaw.charCodeAt(i) & 255;
+  for (let i = 0; i < ivRaw.length && i < 16; i++)
+    ivBytes[i] = ivRaw.charCodeAt(i) & 255;
+  const imported = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "AES-CBC" },
+    false,
+    ["decrypt"]
+  );
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-CBC", iv: ivBytes },
+    imported,
+    ct
+  );
+  return new TextDecoder().decode(plain);
+}
 function loadZangetsuProvider(sourceId, js, fetcher, settings = {}) {
   const collector = `;
     return {
@@ -993,6 +1066,12 @@ function loadZangetsuProvider(sourceId, js, fetcher, settings = {}) {
     "absUrl",
     "unpackJs",
     "console",
+    "base64ToBytes",
+    "bytesToB64",
+    "bytesToHex",
+    "sha256Hex",
+    "aesCtrDecrypt",
+    "aesCbcDecryptB64Url",
     `${js}${collector}`
   );
   return factory(
@@ -1002,7 +1081,13 @@ function loadZangetsuProvider(sourceId, js, fetcher, settings = {}) {
     htmlText,
     absUrl,
     unpackJs,
-    shimConsole
+    shimConsole,
+    base64ToBytes,
+    bytesToB64,
+    bytesToHex,
+    sha256Hex,
+    aesCtrDecrypt,
+    aesCbcDecryptB64Url
   );
 }
 function b64urlEncode(input) {
@@ -3313,6 +3398,10 @@ var SOURCE_ID = (typeof __SOURCE_ID !== 'undefined' && __SOURCE_ID)
 
 var SITE = 'https://hianime.at';
 var API = SITE + '/api/theme/';
+// MegaPlay/VidPlay encrypt getSources into \`enc\`; decrypt with the player's
+// own AES-256-CBC key/iv (same constants as the app's js host).
+var MEGA_AES_KEY = 'i?LMTAx0Q6,:}50U';
+var MEGA_AES_IV = "W0;27ToaUpl_P%'c";
 var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 // Embed hosts that hand back a plain m3u8 (via getSources or getSourcesNew).
@@ -3759,9 +3848,6 @@ function _extractPlayer(embed, cat) {
     }).then(function (r) {
       var j; try { j = JSON.parse(r.body || 'null'); } catch (e) { throw new Error('HiAnime: bad getSources'); }
       var s = j && j.sources;
-      // No sources.file → walk on to the next server.
-      var file = s ? (s.file || (s[0] && s[0].file)) : null;
-      if (!file) throw new Error('HiAnime: no stream file');
       var subs = [], tracks = (j && j.tracks) || [];
       for (var i = 0; i < tracks.length; i++) {
         var t = tracks[i];
@@ -3770,8 +3856,22 @@ function _extractPlayer(embed, cat) {
         subs.push({ url: t.file, lang: t.label || 'Sub', label: t.label || 'Sub',
           format: /\\.srt(\\?|$)/i.test(t.file) ? 'srt' : 'vtt', 'default': !!t['default'] });
       }
-      return _streams(file, { 'User-Agent': UA, 'Referer': base + '/', 'Origin': base },
-        cat, subs);
+      var rest = function (file) {
+        return _streams(file, { 'User-Agent': UA, 'Referer': base + '/', 'Origin': base },
+          cat, subs);
+      };
+      // Plain sources.file when present; otherwise decrypt the \`enc\` blob
+      // MegaPlay/VidPlay now return instead ({"file":"…master.m3u8"}).
+      var file = s ? (s.file || (s[0] && s[0].file)) : null;
+      if (file) return rest(file);
+      if (!j || !j.enc) throw new Error('HiAnime: no stream file');
+      return aesCbcDecryptB64Url(j.enc, MEGA_AES_KEY, MEGA_AES_IV).then(function (pt) {
+        var o; try { o = JSON.parse(pt); } catch (e) { throw new Error('HiAnime: bad enc payload'); }
+        var f = o && o.file;
+        if (!f) { var ss = o && o.sources; f = ss ? (ss.file || (ss[0] && ss[0].file)) : null; }
+        if (!f) throw new Error('HiAnime: no stream file');
+        return rest(f);
+      });
     });
   });
 }
