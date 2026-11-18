@@ -1195,16 +1195,23 @@
     const q = String(quality ?? "").toLowerCase();
     return QUALITY_MAP[q] ?? "unknown";
   }
-  function mapSubtitles(sourceId, streamIdx, subs) {
+  function mapSubtitles(sourceId, streamIdx, subs, streamHeaders) {
     return (subs ?? []).filter((sub) => sub && sub.url).map((sub, i) => {
       const type = ["srt", "vtt"].includes(String(sub.format)) ? sub.format : getCaptionTypeFromUrl(String(sub.url)) ?? "vtt";
       const language = (sub.lang ?? "").length > 0 ? sub.lang : labelToLanguageCode(String(sub.label ?? "")) ?? "en";
+      const captionHeaders = {
+        Referer: streamHeaders.Referer || streamHeaders.referer || "",
+        Origin: streamHeaders.Origin || streamHeaders.origin || "",
+        "User-Agent": streamHeaders["User-Agent"] || streamHeaders["user-agent"] || ""
+      };
       return {
         id: `${sourceId}-${streamIdx}-sub-${i}`,
         type,
         url: String(sub.url),
         hasCorsRestrictions: true,
-        language
+        language,
+        // Store headers for caption download (used by p-stream's downloadCaption)
+        headers: captionHeaders
       };
     });
   }
@@ -1217,7 +1224,7 @@
       const hasHeaders = Object.keys(headers2).length > 0;
       const container = String(source.container ?? "").toLowerCase();
       const isHls = container === "hls" || /\.m3u8(\?|$)/i.test(source.url);
-      const captions = mapSubtitles(entry.id, idx, source.subtitles);
+      const captions = mapSubtitles(entry.id, idx, source.subtitles, headers2);
       const streamId = `${entry.id}-${idx}`;
       if (isHls) {
         const playlist = browserNeedsProxy ? createM3U8ProxyUrl(source.url, { requires: [flags.CORS_ALLOWED] }, headers2) : source.url;

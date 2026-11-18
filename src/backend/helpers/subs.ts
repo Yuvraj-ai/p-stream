@@ -40,15 +40,20 @@ export async function downloadCaption(
 
       data = extensionResponse.response.body;
     } else {
+      // Use the caption-specific headers (Referer, Origin, User-Agent) if available
+      const headers: Record<string, string> = {
+        "Accept-Charset": "utf-8",
+        ...(caption.headers ?? {}),
+      };
       data = await proxiedFetch<string>(caption.url, {
         responseType: "text",
-        headers: {
-          "Accept-Charset": "utf-8",
-        },
+        headers,
       });
     }
   } else {
-    const response = await fetch(caption.url);
+    const response = await fetch(caption.url, {
+      headers: caption.headers ?? {},
+    });
     const contentType = response.headers.get("content-type") || "";
     const charset = contentType.includes("charset=")
       ? contentType.split("charset=")[1].toLowerCase()
@@ -71,10 +76,13 @@ export async function downloadCaption(
  * Downloads the WebVTT content. No different than a simple
  * get request with a cache.
  */
-export async function downloadWebVTT(url: string): Promise<string> {
+export async function downloadWebVTT(
+  url: string,
+  headers?: Record<string, string>,
+): Promise<string> {
   const cached = downloadCache.get(url);
   if (cached) return cached;
 
-  const data = await fetch(url).then((v) => v.text());
+  const data = await fetch(url, { headers }).then((v) => v.text());
   return data;
 }

@@ -70,6 +70,9 @@ export interface CaptionListItem {
   isHearingImpaired?: boolean;
   source?: string;
   encoding?: string;
+  // Headers required to fetch the subtitle (Referer, Origin, User-Agent, etc.)
+  // Used by downloadCaption when needsProxy is true
+  headers?: Record<string, string>;
 }
 
 export interface AudioTrack {
