@@ -1,6 +1,6 @@
 # Hosting P-Stream on your homeserver
 
-This fork of P-Stream ships with **9 Zangetsu streaming sources ported in**
+This fork of P-Stream ships with **10 Zangetsu streaming sources ported in**
 (plus the recovered built-in provider pack), and a docker-compose deployment
 tailored for a home server. Everything runs on your LAN.
 
@@ -15,7 +15,7 @@ tailored for a home server. Everything runs on your LAN.
 
 ### Ported sources (Zangetsu providers)
 
-HiAnime · AniKoto · Kartoons · AnimeCube (anime) — 4KHDHub · UHD Movies ·
+HiAnime · AniKoto · AnimeSuge · Kartoons · AnimeCube (anime) — 4KHDHub · UHD Movies ·
 HDHub4u · VegaMovies · MultiMovies (movies/series). They appear as
 `zangetsu-*` in Settings → Sources and are tried first.
 
