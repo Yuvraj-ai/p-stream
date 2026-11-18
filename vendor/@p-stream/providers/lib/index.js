@@ -6175,8 +6175,8 @@ async function _flixcloud(playerUrl) {
 
   var keyImp = await crypto.subtle.importKey('raw', aesKey,
     { name: 'AES-CBC' }, false, ['decrypt']);
-  var plain = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: iv },
-    keyImp, cipher);
+  var plain = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: _u8(iv) },
+    keyImp, _u8(cipher));
   var url = new TextDecoder().decode(plain);
   if (!url || !url.trim()) return null;
 
