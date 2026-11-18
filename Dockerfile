@@ -50,5 +50,7 @@ RUN pnpm run build
 # production environment
 FROM nginx:stable-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+# listen on 8080 (matches docker-compose mapping and the docs)
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

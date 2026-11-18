@@ -22,7 +22,7 @@ services:
     depends_on:
       - proxy
     ports:
-      - "8080:80"
+      - "8080:8080"
     volumes:
       # runtime configuration (TMDB key, proxy URLs) — edit without rebuilding
       - ./deploy/runtime-config.js:/usr/share/nginx/html/config.js:ro
